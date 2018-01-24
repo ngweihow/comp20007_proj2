@@ -1,0 +1,305 @@
+/* * * * * * * * *
+ * Dynamic hash table using cuckoo hashing, resolving collisions by switching
+ * keys between two tables with two separate hash functions
+ *
+ * created for COMP20007 Design of Algorithms - Assignment 2, 2017
+ * by ...
+ */
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <assert.h>
+
+#include "cuckoo.h"
+
+
+//*******************
+//Struct Definitions ----------------------------------------------------------
+// an inner table represents one of the two internal tables for a cuckoo
+// hash table. it stores two parallel arrays: 'slots' for storing keys and
+// 'inuse' for marking which entries are occupied
+typedef struct inner_table {
+	int64 *slots;	// array of slots holding keys
+	bool  *inuse;	// is this slot in use or not?
+} InnerTable;
+
+// a cuckoo hash table stores its keys in two inner tables
+struct cuckoo_table {
+	InnerTable *table1; // first table
+	InnerTable *table2; // second table
+	int size;			// size of each table
+};
+//-----------------------------------------------------------------------------
+
+
+//*******************************************
+//Helper Function Prototype and Declarations ----------------------------------
+
+//Helper function to initialise or re-initialise cuckoo hash table
+static void initialise_tables(CuckooHashTable *ctable, int size);
+
+//Helper function to re-hash values into the new cuckoo hash table
+static void double_tables(CuckooHashTable *ctable);
+
+
+//-----------------------------------------------------------------------------
+
+
+
+//*****************
+//Helper Functions ------------------------------------------------------------
+
+//INITIALISING TWO TABLES IN ONE CUCKOO HASH TABLE
+// set up the internals of a linear hash table struct with new
+// arrays of size 'size'
+static void initialise_tables(CuckooHashTable *ctable, int size) {
+	int i;
+	
+	//check that the size is not max size
+	assert(size < MAX_TABLE_SIZE && "error: table has grown too large!");
+
+//-------------	
+	//first malloc for the table 1
+	ctable->table1= malloc((sizeof *ctable->table1) * size);
+	assert(ctable->table1);
+	
+	//table 1 slots and inuse list
+	ctable->table1->slots = malloc((sizeof *ctable->table1->slots) * size);
+	assert(ctable->table1->slots);
+	
+	ctable->table1->inuse = malloc((sizeof ctable->table1->inuse) * size);
+	assert(ctable->table1->inuse);
+	
+	//setting the used to all false since this is initialisation
+	for (i = 0; i < size; i++) {
+		ctable->table1->inuse[i] = false;
+	}
+
+//------------
+	//second malloc for the table 2
+	ctable->table2= malloc((sizeof *ctable->table2) * size);
+	assert(ctable->table2);
+	
+	//table 2 slots and inuse list
+	ctable->table2->slots = malloc((sizeof *ctable->table2->slots) * size);
+	assert(ctable->table2->slots);
+	
+	ctable->table2->inuse = malloc((sizeof ctable->table2->inuse) * size);
+	assert(ctable->table2->inuse);
+	
+	//setting the used to all false since this is initialisation
+	for (i = 0; i < size; i++) {
+		ctable->table2->inuse[i] = false;
+	}
+	
+	
+	//adding onto the size of the table
+	ctable->size = size;
+
+}
+
+//DOUBLING THE SIZE OF THE TWO TABLES IN CUCKOO HASH TABLE
+// double the size of the internal table arrays and re-hash all
+// keys in the old tables
+static void double_tables(CuckooHashTable *ctable) {
+	int64 *oldslots1 = ctable->table1->slots ,
+		  *oldslots2 = ctable->table2->slots;
+	bool  *oldinuse1 = ctable->table1->inuse,
+		  *oldinuse2 = ctable->table2->inuse;
+		  
+	int oldsize = ctable->size, i;
+	
+	//checking that table exists and size isnt 0
+	assert(ctable);
+	assert(ctable->size!= 0);
+	
+	
+	//re-initialising a number table
+	initialise_tables(ctable, ctable->size * 2);
+
+	//looping through first table to see which slots were in use
+	for (i = 0; i < oldsize; i++) {
+		if (oldinuse1[i] == true) {
+			cuckoo_hash_table_insert(ctable, oldslots1[i]);
+		}
+	}
+	//looping through second table to see which slots were in use
+	for (i = 0; i < oldsize; i++) {
+		if (oldinuse2[i] == true) {
+			cuckoo_hash_table_insert(ctable, oldslots2[i]);
+		}
+	}
+	
+	//freeing the old slots and inuse list
+	free(oldslots1);
+	free(oldinuse1);
+	
+	free(oldslots2);
+	free(oldinuse2);
+}
+
+
+//----------------------------------------------------------------------------
+
+
+
+//*******************
+//CUCKOO FUNCTIONS -----------------------------------------------------------
+
+// initialise a cuckoo hash table with 'size' slots in each table
+CuckooHashTable *new_cuckoo_hash_table(int size) {
+	//define cuckoo hashtable for new two tables
+	CuckooHashTable *ctable = malloc(sizeof *ctable);
+	
+	//assert the table
+	assert(ctable);
+	
+	//initialise the tables
+	initialise_tables(ctable, size);
+	
+	return ctable;
+}
+
+
+// free all memory associated with 'table'
+void free_cuckoo_hash_table(CuckooHashTable *table) {
+	assert(table != NULL);
+	//freeing both tables in the CuckooHashTable
+	
+	//free first table and its slots and inuse list
+	free(table->table1->slots);
+	free(table->table1->inuse);
+	free(table->table1);
+	
+	//free second table and its slots and inuse list
+	free(table->table2->slots);
+	free(table->table2->inuse);
+	free(table->table2);
+	
+	//free cuckoo table itself
+	free(table);
+}
+
+
+// insert 'key' into 'table', if it's not in there already
+// returns true if insertion succeeds, false if it was already in there
+bool cuckoo_hash_table_insert(CuckooHashTable *table, int64 key) {
+	assert(table != NULL);
+	
+	int index1, index2, i, CYCLE=999;
+	
+	//checking if the key is already inside the table
+	if (cuckoo_hash_table_lookup(table, key)){
+		return false;
+	}
+	
+	//loop through the two tables a large amount of time
+	for(i=0;i<CYCLE;i++){
+		
+		//passing the key intot the first hash function
+		index1 = (h1(key)) % (table->size);
+		//check if the slot is empty and insert if it is
+		if (!(table->table1->inuse[index1])){
+			
+			table->table1->slots[index1] = key;
+			table->table1->inuse[index1] = true;
+			
+			return true;
+		}
+		
+		
+		//passing the key intot the second hash function
+		index2 = (h2(key)) % (table->size);
+		//check if the slot is empty and insert if it is
+		if (!(table->table2->inuse[index2])){
+			
+			table->table2->slots[index2] = key;
+			table->table2->inuse[index2] = true;
+			
+			return true;
+		}
+	}
+	
+	if(table->size < MAX_TABLE_SIZE){
+		double_tables(table);
+	}
+	return false;
+}
+
+
+// lookup whether 'key' is inside 'table'
+// returns true if found, false if not
+bool cuckoo_hash_table_lookup(CuckooHashTable *table, int64 key) {
+	
+	int index1, index2;
+	
+	assert(table != NULL);
+	
+	//inserting through the first table with first hash functions
+	index1 = (h1(key)) % (table->size);
+	if (table->table1->inuse[index1]){
+		return true;
+	}
+	
+	//inserting through the first table with first hash functions
+	index2 = (h2(key)) % (table->size);
+	if (table->table2->inuse[index2]){
+		return true;
+	}
+	
+	return false;
+}
+
+
+// print the contents of 'table' to stdout
+void cuckoo_hash_table_print(CuckooHashTable *table) {
+	assert(table);
+	printf("--- table size: %d\n", table->size);
+
+	// print header
+	printf("                    table one         table two\n");
+	printf("                  key | address     address | key\n");
+	
+	// print rows of each table
+	int i;
+	for (i = 0; i < table->size; i++) {
+
+		// table 1 key
+		if (table->table1->inuse[i]) {
+			printf(" %20llu ", table->table1->slots[i]);
+		} else {
+			printf(" %20s ", "-");
+		}
+
+		// addresses
+		printf("| %-9d %9d |", i, i);
+
+		// table 2 key
+		if (table->table2->inuse[i]) {
+			printf(" %llu\n", table->table2->slots[i]);
+		} else {
+			printf(" %s\n",  "-");
+		}
+	}
+
+	// done!
+	printf("--- end table ---\n");
+}
+
+
+// print some statistics about 'table' to stdout
+void cuckoo_hash_table_stats(CuckooHashTable *table) {
+	
+	printf(" %20s ", "-");
+	printf("\nCUCKO HASHTABLE CURRENT STATISTICS\n");
+	printf(" %20s ", "-");
+	
+		
+	//printing out the size of the cuckoo hashtable
+	printf("CURRENT SIZES OF TABLES: %d\n", table->size);
+	printf(" %20s ", "-");
+	printf("\n");
+	
+	//printing out the percentage of the tables which are filled
+	
+}
